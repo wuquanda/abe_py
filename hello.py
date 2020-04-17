@@ -1,8 +1,11 @@
 from pyparsing import Word, alphas
 import sys
 import charm.schemes.abenc.abenc_maabe_yj14 as wu
-wu.basicTest()
-wu.revokedTest()
+
+# wu.basicTest()
+# wu.revokedTest()
+import  base64
+
 
 # greet = Word(alphas) + "," + Word(alphas) + "!"
 # hello = "Hello, World!"
@@ -60,12 +63,18 @@ class AesEncryption(object):
 
 
 if __name__ == '__main__':
-   #  key = input('请输入key:')
+    # key = input('请输入key:')
     key = b'\t\xd9\xe9\xd8"\x05\n_\xd8\xbf\r\xc3\x1df\xf9^Q\x91?g\xe2\xd1\r\x15-\xfa\xba\x80\x90\xadm\x10'
     data = '我的试试看爽肤水杰弗里斯金风科技'
     aes = AesEncryption(key)
     e = aes.encrypt(data)  # 调用加密函数
     d = aes.decrypt(e)  # 调用解密函数
 
-    print(e)
-    print(d)
+    # print(e)
+    # print(d)
+
+
+
+
+
+

@@ -8,6 +8,8 @@ import json
 import sys
 import getopt
 import base64
+import chardet
+
 
 groupObj = PairingGroup('SS512')
 cp_abe = CP_ABE(groupObj)
@@ -17,7 +19,7 @@ class AesEncryption(object):
         self.key = self.check_key(key)
         # 密钥key长度必须为16,24或者32bytes的长度
         self.mode = mode
-        self.iv = Random.new().read(AES.block_size)
+        self.iv =b'\xf7\xd1@\x04\xe4\xc9\ryLb\xa6U\x94\xb2c\xc6'
 
     def check_key(self, key):
         '检测key的长度是否为16,24或者32bytes的长度'
@@ -88,9 +90,11 @@ def keyGen(GPP,authorities,authorityId,attributes,user,publicUserData):
     authorities = json2Authorities(authorities)
     publicUserData = json2PublicUser(publicUserData)
     user = json2PrivateUser(user)
+    user['authoritySecretKeys']={}
     for attr in authorityAttributes:
         cp_abe.keygen(GPP, authorities[authorityId], attr, publicUserData[user['id']], user['authoritySecretKeys'])
     contentKey = groupObj.random(GT)
+    user['contentKey']=contentKey
     res={
         'publicData':publicUser2Json(publicUserData),
         'privateData':privateUser2Json(user),
@@ -105,16 +109,15 @@ def encrypt(GPP, data, policy_str, authorities, authorityId, user):
     encryptedKey = cp_abe.encrypt(GPP, policy_str, contentKey, authorities[authorityId])
     symmetricKey = extract_key(contentKey)
     aes = AesEncryption(symmetricKey)
-    encryptedData = aes.encrypt(data)
-
+    encryptedData = aes.encrypt(str.encode(data))
     CT={
         'encryptedKey' :encryptedKey,
         'encryptedData':encryptedData
     }
     return CT2Json(CT)
 
-def decrypt(GPP, CT, user):
-    GPP = str2pairingElement(GPP)
+def decrypt(GPP, user, CT):
+    GPP = json2GPP(GPP)
     user = json2PrivateUser(user)
     CT = json2CT(CT)
     encryptedKey = CT['encryptedKey']
@@ -125,39 +128,35 @@ def decrypt(GPP, CT, user):
     data = aes.decrypt(encryptData)
     return data
 
-def ukyeGen(GPP, authorities, authorityId, revokedAttrList, revokedUsersList, publicUserData,UKsVersion, UKcVersion):
+def ukyeGen(GPP, authorities, authorityId,revokedMap,UKsVersion, UKcVersion):
     GPP = json2GPP(GPP)
     authorities = json2Authorities(authorities)
-    revokedAttrList = json.loads(revokedAttrList)
-    revokedUsersList = json.loads(revokedUsersList)
-    publicUserData = json2PublicUser(publicUserData)
     UKsVersion = json2UKsVersion(UKsVersion)
     UKcVersion = json2UKcVersion(UKcVersion)
     oneVersion4UKs = dict()
-    nonRevokedUsers = dict()
     oneVersion4UKc = dict()
-    for (userId, userData) in publicUserData.items():
-        if(userId not in revokedUsersList):
-            oneVersion4UKs[userId]=dict()
-            nonRevokedUsers[userId]=userData
-    for attr in revokedAttrList:
-        UK = cp_abe.ukeygen(GPP, authorities[authorityId], attr, nonRevokedUsers)
+    for (attr, users) in revokedMap.items():
+        UK = cp_abe.ukeygen(GPP, authorities[authorityId], attr, users)
         oneVersion4UKc[attr]=UK['UKc']
-        for (userId,uks) in UK['UKs']:
+        for (userId,uks) in UK['UKs'].items():
             oneVersion4UKs[userId][attr]=uks
     UKcVersion.append(oneVersion4UKc)
+    keys=UKsVersion.keys();
     for(userId,version) in oneVersion4UKs.items():
+        if userId not in keys:
+            UKsVersion[userId]=list()
         UKsVersion[userId].append(version)
     res={
         'UKcVersion':UKcVersion2Json(UKcVersion),
-        'UKsVersion':UKsVersion2Json(UKsVersion)
+        'UKsVersion':UKsVersion2Json(UKsVersion),
+        'authorities':authorities2Json(authorities)
     }
     return json.dumps(res)
 
 def skUpdate(user,UKsVersion):
     user=json2PrivateUser(user)
     UKsVersion = json2UKsVersion(UKsVersion)
-    for version in UKsVersion[user['id']]:
+    for version in UKsVersion:
         for (attr, UKs) in version.items():
             cp_abe.skupdate(user['authoritySecretKeys'], attr,UKs)
     return privateUser2Json(user)
@@ -188,17 +187,17 @@ def CT2Json(CT):
     C2 = pairingElement2str(contentKey['C2'])
     C3 = pairingElement2str(contentKey['C3'])
     C = {}
-    for (attr, key) in contentKey['C']:
+    for (attr, key) in contentKey['C'].items():
         C[attr] = pairingElement2str(key)
     CS = {}
-    for (attr, key) in contentKey['CS']:
+    for (attr, key) in contentKey['CS'].items():
         CS[attr] = pairingElement2str(key)
     D = {}
-    for (attr, key) in contentKey['D']:
+    for (attr, key) in contentKey['D'].items():
         D[attr] = pairingElement2str(key)
     DS = {}
-    for (attr, key) in contentKey['DS']:
-        DS[attr] = pairingElement2str('DS')
+    for (attr, key) in contentKey['DS'].items():
+        DS[attr] = pairingElement2str(key)
     policy=contentKey['policy']
     newContentKey={
         'C1':C1,
@@ -231,7 +230,7 @@ def json2CT(jsonCT):
         D[attr] = str2pairingElement(key)
     DS = {}
     for (attr, key) in contentKey['DS'].items():
-        DS[attr] = str2pairingElement('DS')
+        DS[attr] = str2pairingElement(key)
     policy=contentKey['policy']
     newContentKey={
         'C1':C1,
@@ -261,10 +260,13 @@ def UKcVersion2Json(UKcVersion):
 
 def json2UKcVersion(jsonUKcVersion):
     UKcVersion = list()
+    if(not jsonUKcVersion):
+        return UKcVersion
     oldUKcVersion = json.loads(jsonUKcVersion)
     for oldOneVersion in oldUKcVersion:
         oneVersion = dict()
         for (attr, UKc) in oldOneVersion.items():
+            UKc=json.loads(UKc)
             e0 = str2pairingElement(UKc[0])
             e1 = str2pairingElement(UKc[1])
             oneVersion[attr] = (e0, e1)
@@ -279,12 +281,12 @@ def UKsVersion2Json(UKsVersion):
     return json.dumps(UKsVersion)
 
 def json2UKsVersion(jsonUKsVersion):
+    if(not jsonUKsVersion):
+        return {}
     UKsVersion=json.loads(jsonUKsVersion)
-    for (userId, versionList) in UKsVersion.items():
-        for version in versionList:
-            for (attr, UKs) in version.items():
-                version[attr] = str2pairingElement(UKs)
-
+    for version in UKsVersion:
+        for (attr, UKs) in version.items():
+            version[attr] = str2pairingElement(UKs)
     return UKsVersion
 
 def GPP2Json(GPP):
@@ -480,7 +482,15 @@ def json2Authorities(jsonAuthorities):
             }
         authorities[authorityId] = (SK, PK, newAuthAttrs)
     return authorities
-
+def b64RevokedMap2Obj(b64JsonMap):
+    jsonMap=b64ToJson(b64JsonMap)
+    ObjMap=json.loads(jsonMap)
+    for (attr, users) in ObjMap.items():
+        for (userName, userKeys) in users.items():
+            users[userName]=json.loads(userKeys)
+            for (k, v) in userKeys.items():
+                userKeys[k] = str2pairingElement(v)
+    return ObjMap
 def main(argv):
 
     try:
@@ -521,32 +531,59 @@ def main(argv):
 
             elif (arg=="encrypt"):
                 GPP=b64ToJson(args[0])
-                data=args[1]
-                policy_str=args[2]
-                authorities=b64ToJson(args[3])
-                authorityId=args[4]
-                user=b64ToJson(args[5])
-                res = encrypt(GPP,data,policy_str,authorities,authorityId,user)
-                print(res)
+                sourceFile=args[1]
+                targetFile=args[2]
+                extName=args[3]
+                b64StrData = ''
+                with open(sourceFile, 'rb') as f:
+                    byteData = f.read();
+                    b64ByteData = base64.b64encode(byteData)
+                    b64StrData = bytes.decode(b64ByteData)
+                policy_str=b64ToJson(args[4])
+                authorities=b64ToJson(args[5])
+                authorityId=args[6]
+                user=b64ToJson(args[7])
+                CT = encrypt(GPP,b64StrData,policy_str,authorities,authorityId,user)
+
+                res={
+                    "extName":extName,
+                    "content":CT
+                }
+
+                with open(targetFile, "w+") as f:
+                    f.write(json.dumps(res))
+                print("success")
 
             elif (arg=="decrypt"):
                 GPP=b64ToJson(args[0])
-                CT=b64ToJson(args[1])
-                user=b64ToJson(args[2])
-                res = decrypt(GPP,CT,user)
-                print (res)
+                user=b64ToJson(args[1])
+                sourceFile=args[2]
+                targetFile=args[3]
+                CT={}
+                with open(sourceFile, "r+") as f:
+                    jsonStrData = f.read()
+                    jsonObjData=json.loads(jsonStrData)
+                    CT=jsonObjData['content']
+                    targetFile+=jsonObjData['extName']
+                b64StrData = decrypt(GPP,user,CT)
+                with open(targetFile,"ab+") as f:
+                    b64ByteData=str.encode(b64StrData)
+                    byteData=base64.b64decode(b64ByteData)
+                    f.write(byteData)
+                print("success")
 
             elif (arg=="ukyeGen"):
+                UKsVersion={}
+                UKcVersion=()
                 GPP=b64ToJson(args[0])
                 authorities=b64ToJson(args[1])
                 authorityId=args[2]
-                revokedAttrList=b64ToJson(args[3])
-                revokedUsersList=b64ToJson(args[4])
-                publicUserData=b64ToJson(args[5])
-                UKsVersion=b64ToJson(args[6])
-                UKcVersion=b64ToJson(args[7])
+                revokedMap=b64RevokedMap2Obj(args[3])
+                if(len(args)==6):
+                    UKsVersion=b64ToJson(args[4])
+                    UKcVersion=b64ToJson(args[5])
 
-                res=ukyeGen(GPP,authorities,authorityId,revokedAttrList,revokedUsersList,publicUserData,UKsVersion,UKcVersion)
+                res=ukyeGen(GPP,authorities,authorityId,revokedMap,UKsVersion,UKcVersion)
                 print(res)
             elif (arg=="skUpdate"):
                 user=b64ToJson(args[0])
@@ -556,10 +593,20 @@ def main(argv):
 
             elif (arg=="ctUpdate"):
                 GPP=b64ToJson(args[0])
-                CT=b64ToJson(args[1])
+                sourceFile=args[1]
+                targetFile=args[1]
                 UKcVersion=b64ToJson(args[2])
-                res=ctUpdate(GPP,CT,UKcVersion)
-                print(res)
+                CT = {}
+                jsonObjData={}
+                with open(sourceFile, "r+") as f:
+                    jsonStrData = f.read()
+                    jsonObjData = json.loads(jsonStrData)
+                    CT = jsonObjData['content']
+                updateCT=ctUpdate(GPP,CT,UKcVersion)
+                jsonObjData["content"]=updateCT
+                with open(targetFile, "w+") as f:
+                    f.write(json.dumps(jsonObjData))
+                print("success")
             else:
                 print("method %s not found" % arg)
 
