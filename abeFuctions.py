@@ -139,6 +139,8 @@ def ukyeGen(GPP, authorities, authorityId,revokedMap,UKsVersion, UKcVersion):
         UK = cp_abe.ukeygen(GPP, authorities[authorityId], attr, users)
         oneVersion4UKc[attr]=UK['UKc']
         for (userId,uks) in UK['UKs'].items():
+            if userId not in oneVersion4UKs.keys():
+                oneVersion4UKs[userId]={}
             oneVersion4UKs[userId][attr]=uks
     UKcVersion.append(oneVersion4UKc)
     keys=UKsVersion.keys();
@@ -153,10 +155,9 @@ def ukyeGen(GPP, authorities, authorityId,revokedMap,UKsVersion, UKcVersion):
     }
     return json.dumps(res)
 
-def skUpdate(user,UKsVersion):
+def skUpdate(user,versionList):
     user=json2PrivateUser(user)
-    UKsVersion = json2UKsVersion(UKsVersion)
-    for version in UKsVersion:
+    for version in versionList:
         for (attr, UKs) in version.items():
             cp_abe.skupdate(user['authoritySecretKeys'], attr,UKs)
     return privateUser2Json(user)
@@ -284,9 +285,10 @@ def json2UKsVersion(jsonUKsVersion):
     if(not jsonUKsVersion):
         return {}
     UKsVersion=json.loads(jsonUKsVersion)
-    for version in UKsVersion:
-        for (attr, UKs) in version.items():
-            version[attr] = str2pairingElement(UKs)
+    for (userId,versionList) in UKsVersion.items():
+        for version in versionList:
+            for(attr, UKs) in version.items():
+                version[attr] = str2pairingElement(UKs)
     return UKsVersion
 
 def GPP2Json(GPP):
@@ -488,9 +490,17 @@ def b64RevokedMap2Obj(b64JsonMap):
     for (attr, users) in ObjMap.items():
         for (userName, userKeys) in users.items():
             users[userName]=json.loads(userKeys)
-            for (k, v) in userKeys.items():
-                userKeys[k] = str2pairingElement(v)
+            for (k, v) in users[userName].items():
+                users[userName][k] = str2pairingElement(v)
     return ObjMap
+
+def b64VersionList2Obj(b64VersionList):
+    jsonVersionList=b64ToJson(b64VersionList)
+    versionList=json.loads(jsonVersionList)
+    for version in versionList:
+        for (attr, UKs) in version.items():
+            version[attr] = str2pairingElement(UKs)
+    return versionList
 def main(argv):
 
     try:
@@ -587,8 +597,8 @@ def main(argv):
                 print(res)
             elif (arg=="skUpdate"):
                 user=b64ToJson(args[0])
-                UKsVersion=b64ToJson(args[1])
-                res=skUpdate(user,UKsVersion)
+                versionList=b64VersionList2Obj(args[1])
+                res=skUpdate(user,versionList)
                 print(res)
 
             elif (arg=="ctUpdate"):
